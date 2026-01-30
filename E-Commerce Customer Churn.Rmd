@@ -1,0 +1,85 @@
+---
+title: "E-Commerce Customer Churn"
+author: "Kainoa Pajo"
+date: "2026-01-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidymodels)
+library(vip)
+```
+
+## Data Simulation
+
+```{r}
+set.seed(789)
+n_customers <- 2000 
+
+churn_data <- tibble(
+  customer_id = 1:n_customers,
+  
+  # Customer Attributes
+  tenure_months = sample(1:72, n_customers, replace = TRUE),
+  satisfaction_score = sample(1:5, n_customers, replace = TRUE, prob = c(0.1, 0.1, 0.2, 0.3, 0.3)),
+  num_support_tickets = rpois(n_customers, lambda = 2),
+  
+  # RFM Metrics Calculation
+  recency_days = sample(1:365, n_customers, replace = TRUE),
+  frequency_orders = rpois(n_customers, lambda = 10),
+  monetary_total = rnorm(n_customers, mean = 500, sd = 200)
+) %>%
+  # Churn Logic Definition
+  mutate(
+    risk_score = (1/satisfaction_score) * 2 + (1/tenure_months) * 5 + (num_support_tickets * 0.5),
+    risk_score = risk_score + rnorm(n_customers, 0, 1),
+    churn_status = ifelse(risk_score > quantile(risk_score, 0.75), "Churned", "Retained"),
+    churn_status = as.factor(churn_status)
+  )
+
+# Export for Tableau Visualization
+write_csv(churn_data, "customer_churn_data.csv")
+```
+
+## Predictive Modeling (Random Forest)
+
+```{r}
+# Data Splitting
+split <- initial_split(churn_data, prop = 0.80, strata = churn_status)
+train <- training(split)
+test  <- testing(split)
+
+# Preprocessing Recipe
+churn_recipe <- recipe(churn_status ~ ., data = train) %>%
+  step_rm(customer_id, risk_score) 
+
+# Model Specification
+rf_spec <- rand_forest(trees = 500) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+# Workflow Execution
+fit <- workflow() %>%
+  add_recipe(churn_recipe) %>%
+  add_model(rf_spec) %>%
+  fit(data = train)
+```
+
+## Performance Evaluation
+
+```{r}
+# Generate Probabilities
+results <- test %>%
+  bind_cols(predict(fit, test, type = "prob"))
+
+# Calculate AUC-ROC
+roc_auc(results, truth = churn_status, .pred_Churned)
+
+# Visualization of Risk Drivers
+fit %>%
+  extract_fit_parsnip() %>%
+  vip() +
+  labs(title = "Top Drivers of Customer Attrition")
+```
